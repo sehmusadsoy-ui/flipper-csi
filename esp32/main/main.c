@@ -16,6 +16,14 @@
 #include "esp_timer.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+
+/* Wipe buffers that held credentials or raw commands. A plain memset right
+ * before a variable goes out of scope may be removed by the optimizer
+ * (CWE-14, CodeQL cpp/memset-may-be-deleted); volatile stores are kept. */
+static void secure_zero(void* p, size_t n) {
+    volatile unsigned char* v = (volatile unsigned char*)p;
+    while(n--) *v++ = 0;
+}
 #include "driver/uart.h"
 #include "ping/ping_sock.h"
 #include "csi_motion.h"
@@ -327,8 +335,8 @@ static void command(const char* text, bool connected) {
             portEXIT_CRITICAL(&net_lock);
             csi_motion_reset(&motion);
         }
-        memset(&c, 0, sizeof(c));
-        memset(fields, 0, sizeof(fields));
+        secure_zero(&c, sizeof(c));
+        secure_zero(fields, sizeof(fields));
         send_payload(err == ESP_OK ? "ACK,WIFI" : "ERR,WIFI_APPLY");
     } else
         send_payload("ERR,CMD");
@@ -340,8 +348,8 @@ static void receive_byte(CsiLine* line, uint8_t byte) {
     char cmd[CSI_LINE_CAP] = {0};
     strlcpy(cmd, payload, sizeof(cmd));
     if(xQueueSend(commands, cmd, 0) != pdTRUE) send_payload("ERR,BUSY");
-    memset(cmd, 0, sizeof(cmd));
-    memset(line->data, 0, sizeof(line->data));
+    secure_zero(cmd, sizeof(cmd));
+    secure_zero(line->data, sizeof(line->data));
 }
 static void uart_rx_task(void* arg) {
     (void)arg;
@@ -455,7 +463,7 @@ static void engine_task(void* arg) {
         /* Bound command work so noise cannot starve sample processing. */
         if(xQueueReceive(commands, cmd, 0) == pdTRUE) {
             command(cmd, connected);
-            memset(cmd, 0, sizeof(cmd));
+            secure_zero(cmd, sizeof(cmd));
             /* WIFI may have changed the connection; refresh before taking data. */
             uint32_t after_gen;
             portENTER_CRITICAL(&net_lock);
@@ -604,7 +612,7 @@ void app_main(void) {
            threshold <= CSI_THR_MAX)
             motion.threshold = (float)threshold / 1000;
         if(nvs_get_u8(h, "automatic", &automatic) == ESP_OK) motion.automatic = automatic == 1;
-        memset(&saved, 0, sizeof(saved));
+        secure_zero(&saved, sizeof(saved));
         nvs_close(h);
     }
     net.configured = credentials.ssid[0] != 0;
